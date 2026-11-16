@@ -96,6 +96,8 @@ detach_after_s: float | None = None  # 前台超过这个秒数就转后台（No
 - **输出游标在内存**：重启后 `job_output` 的游标重置，第一次读返回全量（64 KB 上限）。
 - **未做的**：并发上限、输出游标持久化、Web 端"任务面板"（后端信息已足够：工具结果 +
   状态栏 + 完成通知）。
+- **取消的边界**：取消（用户点停止）只取消**正在前台等待**的那次调用；**已经转后台的任务不会
+  随 turn 一起取消**（要停请用 `job_kill`）——这是"后台任务独立于 turn"的直接推论。
 
 ## Testing
 
@@ -109,5 +111,19 @@ detach_after_s: float | None = None  # 前台超过这个秒数就转后台（No
 | `job_output` | 第一次读到输出、第二次读 `no new output`（增量）；已结束任务的 `wait=true` 立刻返回；未知 id `is_error` |
 | `job_list` / `job_kill` | 列表含 id 与 `running`；kill 后任务 `killed`；重复 kill `is_error` |
 | 状态栏 + 恢复 | 无任务时 `None`；有 start 无 result 时显示；`repair_background_jobs` 补 `killed` 且幂等 |
+
+另有一轮 **`ocr`（open-code-review）审阅**（对提交 `75c38b5`，10 文件 / 14 条评论）抓到并修掉 5 处：
+
+1. `repair_background_jobs` 曾被放在 `if not calls: return ()` **之后** ⇒ "只有孤儿后台任务"的
+   会话永远收不了口（状态栏永久在跑）；
+2. 取消路径：`wait_for(shield(pending))` 只取消 shield ⇒ 底层调用成了无人 await 的孤儿任务，
+   且日志里没有任何痕迹；
+3. `adopt` 场景的 `job_kill` 只停包装任务 ⇒ 被接管的底层任务仍在跑；
+4. `build_jobs_status` 假定 `event.data` 一定是 dict ⇒ 坏日志让整条状态栏静默消失；
+5. settle 记账失败会把任务拖成"未处理异常收尾"，`tool/background/result` 永远不落。
+
+对应的 5 条回归测试在 `tests/test_async_tools.py` 里（`test_recovery_repairs_orphan_jobs_*`、
+`test_cancel_while_detaching_cancels_the_pending_tool`、`test_kill_cancels_the_adopted_task`、
+`test_status_tolerates_non_dict_event_data`、`test_settle_bookkeeping_failure_does_not_break_the_job`）。
 
 三绿：`ruff`（含 `eval`）· `mypy` · `pytest`。

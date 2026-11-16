@@ -587,18 +587,21 @@ def _settle_notice(agent, call: ToolCallBlock):
     通知里**必须点名 `job_output`**——否则模型不知道下一步干什么（DSH 的措辞同理）。
     """
     def on_settle(job) -> None:
+        try:
+            _settle(agent, call, job)
+        except Exception:        # noqa: BLE001 - 记账/通知失败都不能让任务以未处理异常收尾
+            pass
+
+    def _settle(agent, call, job) -> None:
         agent.session.append('tool/background/result', {
             'job_id': job.id, 'call_id': call.id, 'tool': job.tool, 'label': job.label,
             'status': job.status, 'detail': job.detail, 'output': job.output,
             'lossy': job.lossy, 'elapsed_ms': int(job.elapsed() * 1000),
         }, ignorable=True)
-        try:
-            agent.followup(
-                f'[后台任务 {job.id} {job.status} · {job.elapsed():.1f}s · {job.tool}] '
-                f'{job.detail}。用 job_output 读输出'
-                f'{"（已截断 lossy）" if job.lossy else ""}；job_list 看全部后台任务。')
-        except Exception:        # noqa: BLE001 - 通知投递失败不影响任务本身
-            pass
+        agent.followup(
+            f'[后台任务 {job.id} {job.status} · {job.elapsed():.1f}s · {job.tool}] '
+            f'{job.detail}。用 job_output 读输出'
+            f'{"（已截断 lossy）" if job.lossy else ""}；job_list 看全部后台任务。')
     return on_settle
 
 
@@ -639,6 +642,11 @@ async def _run_with_detach(agent, call: ToolCallBlock, spec, arguments: dict) ->
             f'still running after {spec.detach_after_s}s — moved to background job {job.id} '
             '(NOT cancelled). You will get a message when it settles; job_output for partial output.',
             False)
+    except asyncio.CancelledError:
+        # 用户取消：`wait_for` 只取消了 shield，底层 `pending` 还活着——必须显式取消，
+        # 否则它会变成无人 await 的孤儿任务，而日志里既无结果也无痕迹（违反"日志是唯一事实源"）。
+        pending.cancel()
+        raise
     except Exception as error:                       # noqa: BLE001 - 失败降级为结果
         return create_tool_result_message(call.id, f'{type(error).__name__}: {error}', True)
     return create_tool_result_message(call.id, outcome.content, outcome.is_error)

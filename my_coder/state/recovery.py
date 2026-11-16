@@ -96,6 +96,9 @@ def repair_dangling_tool_calls(session: Session) -> tuple[str, ...]:
     幂等：补完之后再扫就什么都不缺，第二次调用什么都不写。所以可以在每个恢复
     入口无条件调一次，不必先判断"这个会话是不是坏的"。
     """
+    # 后台任务收口**必须在早退之前**：只修"悬空工具调用"时这里会 return，
+    # 而"只有孤儿后台任务、没有悬空调用"的会话就永远收不了口（状态栏永久在跑）。
+    repair_background_jobs(session)
     calls = dangling_tool_calls(session)
     if not calls:
         return ()
@@ -111,6 +114,4 @@ def repair_dangling_tool_calls(session: Session) -> tuple[str, ...]:
             create_tool_result_message(call.id, REPAIR_TEXT, True),
             surface_op='append',
         )
-    # 后台任务同样要收口：进程重启后"在跑"的任务不可能还在跑（状态栏也靠它）
-    repair_background_jobs(session)
     return tuple(call.id for call in calls)

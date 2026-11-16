@@ -168,3 +168,119 @@ def test_status_is_a_log_projection_and_recovery_closes_orphans(tmp_path):
     statuses = [event.data.get('status') for event in session.events
                 if event.type == 'tool/background/result']
     assert statuses == ['killed']
+
+
+# ============================================================================
+# OCR 审阅（open-code-review）抓到的问题的回归测试：每条都钉住一个真实失效模式
+# ============================================================================
+
+def test_recovery_repairs_orphan_jobs_even_without_dangling_calls(tmp_path):
+    """OCR #1：`repair_background_jobs` 曾被放在 `if not calls: return ()` 之后。
+
+    于是"只有孤儿后台任务、没有悬空工具调用"的会话**永远收不了口**：状态栏永久显示在跑。
+    """
+    from my_coder.state.recovery import repair_dangling_tool_calls
+
+    agent, _ = _agent(tmp_path)
+    session = agent.session
+    session.append('tool/background/start',
+                   {'job_id': 'job-orphan', 'call_id': 'c1', 'tool': 'read_file', 'label': 'x'},
+                   ignorable=True)
+
+    assert repair_dangling_tool_calls(session) == (), '没有悬空工具调用，返回空元组'
+    statuses = [event.data.get('status') for event in session.events
+                if event.type == 'tool/background/result']
+    assert statuses == ['killed'], '孤儿后台任务必须被收口（与悬空调用无关）'
+    assert build_jobs_status(session) is None
+
+
+def test_cancel_while_detaching_cancels_the_pending_tool(tmp_path):
+    """OCR #2：用户取消时 `wait_for(shield(pending))` 只取消 shield，底层 Task 成了孤儿。
+
+    修法：`except asyncio.CancelledError: pending.cancel(); raise`。这里验证底层**真的被取消**，
+    且日志里**没有** `tool/background/start`（它没被接管成后台任务，不该留下痕迹）。
+    """
+    cancelled = asyncio.Event()
+
+    async def slow(arguments, agent, signal):
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return ToolOutcome('never')
+
+    agent, _ = _agent(tmp_path, extra_spec=ToolSpec(
+        name='slow_tool', description='slow', parameters={'type': 'object', 'properties': {}},
+        # `detach_after_s` 必须**大于**取消时刻：否则任务在取消前就转后台了，
+        # 就测不到"取消正在前台等待的那一次调用"这条路径（第一版就踩了这个坑）。
+        execute=slow, detachable=True, detach_after_s=5.0))
+
+    async def scenario():
+        task = asyncio.create_task(_run_one(agent, _call('c3', 'slow_tool')))
+        await asyncio.sleep(0.05)          # 让它进入 wait_for(shield(pending))
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await asyncio.sleep(0.05)          # 给 pending.cancel() 生效时间
+        return cancelled.is_set()
+
+    assert asyncio.run(scenario()) is True, '取消必须传播到底层工具（否则它在后台空跑）'
+    types = [event.type for event in agent.session.events]
+    assert 'tool/background/start' not in types, '没转后台就不该留下后台任务痕迹'
+
+
+def test_kill_cancels_the_adopted_task(tmp_path):
+    """OCR #3：`adopt` 场景下 cancel 只停包装任务，底层 `read_file` 仍在跑。"""
+    agent, _ = _agent(tmp_path)
+
+    async def scenario():
+        work = asyncio.create_task(asyncio.sleep(5))
+        job = agent.jobs.adopt(session_id=agent.session.id, tool='read_file', label='x',
+                               task=work)
+        await asyncio.sleep(0)
+        assert agent.jobs.cancel(job.id) is True
+        try:
+            await asyncio.wait_for(asyncio.shield(job.task), 2)
+        except (asyncio.CancelledError, TimeoutError):
+            pass
+        await asyncio.sleep(0.05)
+        return job, work
+
+    job, work = asyncio.run(scenario())
+    assert job.status == 'killed'
+    assert work.cancelled(), '被接管的底层 Task 必须一并取消（job_kill 不能只是改状态）'
+
+
+def test_status_tolerates_non_dict_event_data(tmp_path):
+    """OCR #4：`build_jobs_status` 假定 `data` 一定是 dict——坏日志会让整条状态栏静默消失。"""
+    agent, _ = _agent(tmp_path)
+    session = agent.session
+    session.append('tool/background/start', None, ignorable=True)   # 坏数据（data=None）
+    session.append('tool/background/result', None, ignorable=True)
+    assert build_jobs_status(session) is None, '坏数据应当被跳过，而不是把状态栏整条炸掉'
+
+
+def test_settle_bookkeeping_failure_does_not_break_the_job(tmp_path):
+    """OCR #5：`session.append` 失败不能让任务以未处理异常收尾（否则 result 永远不落）。"""
+    agent, _ = _agent(tmp_path)
+    real_append = agent.session.append
+
+    def boom(type_, data=None, **kwargs):
+        if type_ == 'tool/background/result':
+            raise RuntimeError('disk full')
+        return real_append(type_, data, **kwargs)
+
+    agent.session.append = boom        # type: ignore[method-assign]
+
+    async def scenario():
+        job = agent.jobs.start(session_id=agent.session.id, tool='fake', label='x',
+                               work=lambda: _done('ok'))
+        await asyncio.wait_for(asyncio.shield(job.task), 5)
+        return job
+
+    job = asyncio.run(scenario())
+    assert job.status == 'completed', '记账失败不该改变任务本身的成败'
+    assert job.task is not None and job.task.exception() is None, '任务不许以未处理异常收尾'

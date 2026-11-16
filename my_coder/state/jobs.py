@@ -4,7 +4,7 @@
 （`tool/background/start` / `tool/background/result`），所以：
 
 - 进程重启后本表是空的（内存态），日志投影仍能说明"哪些任务没结果"；
-- `state/recovery.py` 在重放时把"有 start、没 result"的任务补成 `aborted`，
+- `state/recovery.py` 在重放时把"有 start、没 result"的任务补成 `killed`，
   ⇒ 不会出现"日志说在跑、其实进程早没了"的幽灵任务。
 
 为什么不做持久化：**日志是唯一事实源**（不变式①）。这里存第二份状态会立刻出现
@@ -48,6 +48,9 @@ class Job:
     cursor: int = 0
     detail: str = ''
     task: asyncio.Task | None = None
+    # `adopt` 场景下真正在跑的是这个底层 Task（`task` 只是 `_drive` 的包装）——
+    # 取消时必须一并取消它，否则 job_kill 只是改了状态，前台工具还在后台跑。
+    adopted: asyncio.Task | None = None
 
     def elapsed(self) -> float:
         return max(0.0, time.monotonic() - self.started_at)
@@ -72,6 +75,7 @@ class JobRegistry:
               on_settle: OnSettle | None = None) -> Job:
         """接管一个**已经在跑**的 Task（前台超时转后台用，任务本身绝不被取消）。"""
         job = self._new(session_id=session_id, tool=tool, label=label)
+        job.adopted = task
         job.task = asyncio.create_task(self._drive(job, None, on_settle, adopted=task))
         return job
 
@@ -82,6 +86,8 @@ class JobRegistry:
         job.status = STOPPING
         if job.task is not None:
             job.task.cancel()
+        if job.adopted is not None and not job.adopted.done():
+            job.adopted.cancel()      # 底层真活儿也要停（见 Job.adopted 的注释）
         return True
 
     # ---------- 查询 ----------
@@ -156,11 +162,12 @@ def build_jobs_status(session, *, limit: int = 3) -> str | None:
     判据：有 `tool/background/start`、但没有对应 `tool/background/result` ⇒ 还在跑。
     进程重启后由 `state/recovery.py` 补的 `killed` 收口 ⇒ 不会出现幽灵任务。
     """
-    started = [event for event in session.events if event.type == 'tool/background/start']
+    started = [event for event in session.events
+               if event.type == 'tool/background/start' and isinstance(event.data, dict)]
     if not started:
         return None
     done = {event.data.get('job_id') for event in session.events
-            if event.type == 'tool/background/result'}
+            if event.type == 'tool/background/result' and isinstance(event.data, dict)}
     live = [event for event in started if event.data.get('job_id') not in done]
     if not live:
         return None
