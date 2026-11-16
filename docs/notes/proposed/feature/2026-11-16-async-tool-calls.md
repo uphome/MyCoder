@@ -70,14 +70,38 @@ ToolSpec(
   `status:'aborted', detail:'process restarted'`（与 `state/recovery.py::repair_dangling_tool_calls` 同一模式）
   ⇒ 不留"永远在跑"的幽灵任务。
 
-### 5. 供给面（AGENTS.md 硬要求：新工具 = 实现 + 供给面）
+### 5. 供给面（三个工具 + 一条状态栏，形制照 DSH `packages/jobs/tool-jobs`）
 
-- 新工具 **`job_output(job_id)`**（取当前输出；v1 返回**全量但有上限**，不做字节游标；文档写明
-  "重复调用返回同样的内容"）与 **`job_kill(job_id)`**；
-- **运行时状态贡献者**（`app/factory.py` 一行）：`⏳ 1 个后台任务在跑：job-7f3a（read_file, 8.2s）`
-  ⇒ 模型不用猜、也不容易忘；
-- **上限**：每会话并发后台任务 **2**；单任务输出 **64 KB**（超出截断并打 `lossy: true`）；超限返回
-  `is_error` 并说明理由（fail-closed）。
+**三个工具**（每个只做一件事，schema 小、无歧义）：
+
+| 工具 | 参数 | 返回 |
+|---|---|---|
+| **`job_list()`** | 无 | **本会话**（不跨会话、不跨 agent）的后台任务：`id · 工具 · 状态 · 已耗时 · 输出字节数`。状态闭集：`running / stopping / completed / killed / failed` |
+| **`job_output(job_id, wait=false, timeout_ms=10000)`** | `job_id`；可选**有界等待** | 该任务的**增量输出**（自上次读起）+ `lossy` 标记。`wait=true` 时最多等 `timeout_ms` 再返回——**这就是"反轮询"的正解**：模型可以"等一会儿拿结果"，而不是自己刷 |
+| **`job_kill(job_id)`** | `job_id` | 请求停止；状态先置 `stopping`，settle 后变 `killed`（或 `completed`） |
+
+- **完成通知**照 DSH 的措辞：`Done; read its output with job_output.` / `…killed…`——通知里**必须点名
+  `job_output`**，否则模型不知道下一步该干什么；
+- `job_output` 的**读取游标**存在 Job 注册表（内存）；**重启后游标重置** ⇒ 第一次读返回全量
+  （有 64 KB 上限 + `lossy`）。这条要写进工具描述，避免模型以为"输出丢了"；
+- **未知 / 已结束的 job_id** ⇒ `is_error`，并提示"已结束的任务看完成通知，或 `read_turn` 追原文"。
+
+**状态栏（不是工具）**：`app/factory.py` 里注册一个**运行时状态贡献者**（AGENTS.md：一个源 = 一个名字 +
+`build(session) -> str | None`，无内容返回 None）：
+
+```
+⏳ 后台任务（1）：job-7f3a · read_file · 8.2s · 输出 12 KB
+```
+
+**它必须是日志投影、不许读内存注册表**（AGENTS.md 要求 `build` 是"日志投影的纯函数且便宜"）：
+判据是"有 `tool/result` 说 started、但没有对应的 `tool/background/result`" ⇒ `running`；进程重启后
+由重放补的 `aborted` 收口 ⇒ 状态栏不会出现"永远在跑"的幽灵任务。
+
+**上限**：每会话并发后台任务 **2**；单任务输出 **64 KB**（超出截断并打 `lossy: true`）；超限返回
+`is_error` 并说明理由（fail-closed）。
+
+**Web 面板**：v1 不做（DSH 有 `client/ui-jobs` 独立面板）；后端状态已在工具结果 + 状态栏里，
+前端只需把完成通知画成一张卡即可，等真的需要再说。
 
 ## Alternatives
 
@@ -111,4 +135,7 @@ ToolSpec(
 - [ ] `job_kill` 之后：任务被取消、日志记 `status:'killed'`，父会话不受影响
 - [ ] 重放一个"started 但没有 result"的日志：自动补 `aborted`（不炸、不悬空）
 - [ ] 并发上限 2 与输出上限 64 KB（`lossy`）各有测试
+- [ ] `job_list` 只列**本会话**的任务；状态落在 `running/stopping/completed/killed/failed` 闭集里
+- [ ] `job_output(wait=true)` 在 `timeout_ms` 内拿到结果就提前返回，超时返回"还没完"而不报错
+- [ ] 状态栏是**日志投影**：删掉内存注册表（模拟重启）后，状态栏仍能正确显示 running / 收口为 aborted
 - [ ] 三绿（`ruff` 含 `eval` · `mypy` · `pytest`）+ 真机演示：读一个大会话/大文件时，这一轮**不再卡**
