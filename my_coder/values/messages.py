@@ -285,6 +285,8 @@ TRACE_FRAME_TYPES = ('assistant/chunk', 'assistant/reasoning/chunk')
 # 忘了加不会静默：新类型的日志在旧读取者那里会明确报"未知且不可忽略"。
 # 判据：事件类型是否出现在 `my_coder/` 的 `session.append(...)` 里。
 KNOWN_SESSION_EVENT_TYPES = frozenset({
+    'tool/background/start',
+    'tool/background/result',
     'agent/inbox/spliced',
     'assistant/attempt',
     'assistant/chunk',

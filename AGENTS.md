@@ -80,19 +80,15 @@ Windows 控制台是 GBK：用 `--no-capture-output`；`conda run -c` 不支持�
   （5.1 没有 `&&`）；描述与后端由同一个 `pick_shell()` 产出，不许漂移。见
   [那篇 bug-fix](docs/notes/implemented/bug-fix/2026-09-29-windows-shell-backend.md)。
 - **每轮叠给模型的运行时状态走注册制贡献者**（`state/runtime_status.py`）：一个源 = 一个名字 +
-  `build(session) -> str | None`（**无内容返回 None**）；`register` 对空名/重名/不可调用**当场抛错**；
-  非空者各贴一条合成 user 消息在末尾（不进日志、不进 `derive_messages`）；**加一个源 =
-  `app/factory.py` 的 `_runtime_status()` 里一行**，循环一行都不用改；`build` 必须是日志投影的
-  纯函数且便宜（每请求求值）；坏一个不炸对话（记 ERROR 跳过）。
+  `build(session) -> str | None`（无内容返回 None）；重名/空名/不可调用**当场抛错**；非空者各贴一条
+  合成 user 消息在末尾（不进日志、不进 `derive_messages`）；**加一个源 = `app/factory.py` 一行**；
+  `build` 必须是**日志投影的纯函数且便宜**；坏一个记 ERROR 跳过。
 - **上下文召回**：压缩只改变"看得见什么"，不改变"存在什么"——三层补差：**L0 会话目录**
   （每请求的状态贡献者）→ **L1 用户话清单**（`session_manifest`）→ **L2 回合明细**（`read_turn`）。
-  判据：检索面 = 曾经进过模型上下文的事件**全集**（含被遮蔽的），痕迹事件不进；
-  **不做相关性排序**，靠顺序 + 回合号 + 足迹导航；坐标是回合号（可加 `step`），seq 只在内部；
-  **L1 截断必须明说并给 `read_turn` 坐标**；**L2 按行分页**（明说总量与继续的坐标），
-  **块级不许静默截断**；跨工作区 fail-closed；两个工具 `parallel` + `offload=True`；
-  入参自己较真类型（坏值降级 `is_error`）。见
-  [机制](docs/notes/implemented/feature/2026-09-19-context-recall.md)、
-  [渲染修复](docs/notes/implemented/bug-fix/2026-09-29-silent-render-truncation.md)、
+  检索面 = 曾进过模型上下文的**事件全集**（含被遮蔽的），痕迹事件不进；**不做相关性排序**；
+  坐标是回合号（可加 `step`）；**L1 截断必须明说并给 `read_turn` 坐标**；**L2 按行分页**、
+  **块级不许静默截断**；跨工作区 fail-closed；两个工具 `parallel` + `offload=True`；坏入参 `is_error`。
+  见[机制](docs/notes/implemented/feature/2026-09-19-context-recall.md)、
   [怎么量](docs/notes/implemented/testing/2026-09-19-context-recall-evaluation.md)。
 - **恢复要自愈"悬空工具调用"**：每个恢复入口（重放后、`bind_store` 后）都调
   `recovery.repair_dangling_tool_calls`；修复必须**写进日志**（`session/repaired` + is_error 合成结果），
@@ -101,11 +97,10 @@ Windows 控制台是 GBK：用 `--no-capture-output`；`conda run -c` 不支持�
   （`session/workspace` 痕迹事件，`Session.workspace()` 倒读）；按 seat 隔离（`Seat.args` 只换 workspace）；
   旧会话跟随宿主默认且不改写；记录的工作区不存在了 → **409 + 明确原因，绝不静默回退**；
   判据落在"去掉空白后"的值上（空白 = 没记录过）；选择策略只校验"存在 + 是目录"。
-- **工作区指令文件的发现与维护**：候选是根的 `AGENTS.md`/`CLAUDE.md`（正文注入 system 的 live 段），
-  子目录同名文件只列路径；**不向上发现**；**探测是三态**（确认存在 / 确认不存在 / **读不到**）——
-  **不要把"不知道"降级成"没有"**；`lstat` 再 `stat`（断链 ≠ 不存在）；读完再取一次缓存键；
-  符号链接越界不注入（与技能共用 `sandbox.workspace_escape_reason`）；输出必须可复现
-  （`dirnames.sort()`）；内容按请求新鲜、清单按回合新鲜。见 `docs/prior-art.md` §9。
+- **工作区指令文件的发现**：候选是根的 `AGENTS.md`/`CLAUDE.md`（正文注入 system 的 live 段），
+  子目录同名文件只列路径；**不向上发现**；探测是**三态**（确认有 / 确认没有 / **读不到**）——
+  **不要把"不知道"降级成"没有"**；符号链接越界不注入；输出可复现（`dirnames.sort()`）。
+  见 `docs/prior-art.md` §9。
 - **按需技能（skill）**：`*.md` + frontmatter；bundled（随包）与 workspace 两个来源按名字合并，
   **workspace 覆盖 bundled**，合并后按名字排序；目录只注入 name + description（**不列路径**——
   列了会诱导 `read_file`，而 bundled 在包外会被沙箱拒）；目录与 `skill` 工具**共用同一个
@@ -118,11 +113,15 @@ Windows 控制台是 GBK：用 `--no-capture-output`；`conda run -c` 不支持�
   `/history` 与 `sessions/*/switch|new` 三条通道幂等。见 `docs/prior-art.md` §5。
 - **工具收敛（issue #2）**：判据是"**自上次变更以来连续多少次只读调用**"，不是回合步数
   （实测：实现型长回合 61 步、最长只读段只有 4，按步数砍会砍掉合法的大任务）。纯读工具**必须声明**
-  `ToolSpec.cacheable=True`（七条纯读工具在 `my_coder/tools/` 里各自声明；默认 `False` = 会变更，
+  `ToolSpec.cacheable=True`（纯读工具在 `my_coder/tools/` 各自声明；默认 `False` = 会变更，
   出现一次变更类调用就清零计数）；到阈值把提示写进**那次工具结果的正文**；
   到硬上限时下一步**不带工具面**（收尾步；模型若仍发调用则**不执行**、补 `is_error`），
   `turn/end` 记 **`read-budget`**。开关：`--readonly-nudge/--readonly-close/--no-convergence`。
   见[工具收敛那篇](docs/notes/implemented/feature/2026-09-30-tool-convergence.md)。
+- **工具级异步（`run_in_background`）**：只有 `detachable=True` 的**只读**工具能后台跑；
+  `detach_after_s` 到点**转后台不取消**；完成 splice 通知（**点名 `job_output`**）；状态栏是
+  **日志投影**（有 start 无 result ⇒ running），重启由 `repair_background_jobs` 收口。
+  见[那篇](docs/notes/implemented/feature/2026-11-16-async-tool-calls.md)。
 - **发现缺口时怎么办**：① 本 PR 引入的 → **本 PR 修掉**；② 几十行且不改语义 → **顺手修**，
   PR 正文点明；③ 只有"真的大"才开 issue，且写清**什么时候修、卡在什么前提**。
   取舍与候选方案进 `NEXT_STEPS.md`，不进 issue 列表。
@@ -142,7 +141,7 @@ Windows 控制台是 GBK：用 `--no-capture-output`；`conda run -c` 不支持�
 - `my_coder/cli.py`（`--fake` 离线跑通、`--resume` 演示重放）；`my_coder/web/`（FastAPI + SSE，
   拆成 `app`/`state`/`sessions`/`titles`/`payload`）；`show_memory.py`（记忆 = 日志投影）
 - 工具在 `my_coder/tools/`：`read_file` / `list_files` / `grep` / `glob` / `edit` / `write_file` /
-  `bash` / `todo_write` / `web_search` / `skill` / `session_manifest` / `read_turn`；
+  `bash` / `todo_write` / `web_search` / `skill` / `session_manifest` / `read_turn` / `job_list` / `job_output` / `job_kill`；
   类型（schema + executor + 并发模式 + 卸载 + 超时 + approval）在 `state/registry.py`；
   bash/write_file/edit 需人工确认
 - 三个"读工作区外"的东西（`web_search` / `skill` / 召回工具）都不写工作区、无副作用、不走沙箱、不需要 approval；

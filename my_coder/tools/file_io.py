@@ -186,6 +186,11 @@ def register(registry, workspace: Path) -> None:
                 'offset': {'type': 'integer', 'description': '1-based start line, default 1'},
                 'limit': {'type': 'integer', 'description': 'max lines to return, default 200'},
                 'line_numbers': {'type': 'boolean', 'description': 'prepend line numbers, default true'},
+                'run_in_background': {
+                    'type': 'boolean',
+                    'description': ('run as a background job and return a job id immediately '
+                                    '(job_output to read, job_kill to stop); default false'),
+                },
             },
             'required': ['file_path'],
         },
@@ -194,6 +199,9 @@ def register(registry, workspace: Path) -> None:
         execution_mode='parallel',
         offload=True,
         cacheable=True,          # 纯读、无产出：进度策略据此计"无进展只读"
+        # 工具级异步：只读、无副作用，允许后台跑；前台超过 3s 自动转后台（不丢活）
+        detachable=True,
+        detach_after_s=3.0,
     ))
     registry.register(ToolSpec(
         name='list_files',

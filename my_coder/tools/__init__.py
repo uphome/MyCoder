@@ -18,7 +18,7 @@ from pathlib import Path
 
 from ..app.skills import SkillTable
 from ..state.registry import ToolRegistry
-from . import file_io, recall, search, shell, skill, todo, web_search
+from . import file_io, jobs, recall, search, shell, skill, todo, web_search
 
 
 def build_tools(
@@ -42,6 +42,7 @@ def build_tools(
     skills = SkillTable(workspace) if skills is None else skills
     registry = ToolRegistry()
     file_io.register(registry, workspace)
+    jobs.register(registry)
     search.register(registry, workspace)
     skill.register(registry, skills)
     shell.register(registry, workspace, bash_timeout_s=bash_timeout_s)

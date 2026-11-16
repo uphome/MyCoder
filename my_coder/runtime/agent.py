@@ -13,6 +13,7 @@ from typing import cast
 
 from ..capability.hooks import Hooks
 from ..state.inbox import Inbox, InboxNotifications
+from ..state.jobs import JobRegistry
 from ..state.progress import ProgressPolicy
 from ..state.prompt import PromptRegistry
 from ..state.registry import ToolRegistry
@@ -72,6 +73,8 @@ class Agent:
         self.llm = llm
         self.prompt = prompt
         self.tools = tools
+        # 后台工具任务的句柄表（工具级异步）；**状态在日志里**，不在这里
+        self.jobs = JobRegistry()
         # 每轮叠给模型的运行时状态（注册制贡献者，见 state/runtime_status.py）：
         # 与 prompt / tools 并列的第四个"可插拔面"。默认空注册表——没有贡献者时
         # 循环一行都不会多叠，行为与加这条通道之前完全一致。

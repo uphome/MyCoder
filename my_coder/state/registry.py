@@ -22,13 +22,16 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from ..values.limits import TOOL_RESULT_MAX_CHARS
 from ..values.messages import ToolOutcome
 
 # 合法的执行模式：parallel=可与其他调用并发；sequential=独占（也是默认值）。
 EXECUTION_MODES = frozenset({'parallel', 'sequential'})
+
+# `execute(timeout_s=…)` 的哨兵：不传 = 用 spec.timeout_s；传 None = 调用方自管。
+_DEFAULT_TIMEOUT = object()
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,11 @@ class ToolSpec:
     requires_approval: bool = False
     offload: bool = False
     cacheable: bool = False
+    # 能不能异步化（工具级后台任务）：只有"I/O 重、无副作用"的工具才声明。
+    # 默认 False = fail-closed：没声明就永远在前台跑完（行为与今天完全一致）。
+    detachable: bool = False
+    # 前台跑超过这个秒数就**转后台**（不取消任务）；None = 不转。
+    detach_after_s: float | None = None
 
 
 class ToolRegistry:
@@ -129,7 +137,8 @@ class ToolRegistry:
             for spec in self._tools.values()
         ]
 
-    async def execute(self, name: str, arguments: dict, agent, signal=None) -> ToolOutcome:
+    async def execute(self, name: str, arguments: dict, agent, signal=None, *,
+                      timeout_s: float | None | object = _DEFAULT_TIMEOUT) -> ToolOutcome:
         """执行一条工具调用：校验参数 → 超时包裹执行 → 返回结果。
 
         唯一的兜底在这里：asyncio.TimeoutError 降级成 is_error 结果，
@@ -149,10 +158,16 @@ class ToolRegistry:
             pending = asyncio.to_thread(_run_blocking, spec.execute, arguments, agent, signal)
         else:
             pending = spec.execute(arguments, agent, signal)
+        limit = spec.timeout_s if timeout_s is _DEFAULT_TIMEOUT else timeout_s
+        if limit is None:
+            # 调用方自己管超时（后台任务 / 超时转后台）：**不许**在这里再套一层，
+            # 否则后台任务跑到 timeout_s 会被误判成失败。
+            outcome = await pending
+            return _truncate_outcome(outcome)
         try:
-            outcome = await asyncio.wait_for(pending, timeout=spec.timeout_s)
+            outcome = await asyncio.wait_for(pending, timeout=cast(float, limit))
         except TimeoutError:
-            return ToolOutcome(content=f'tool {name!r} timed out after {spec.timeout_s}s', is_error=True)
+            return ToolOutcome(content=f'tool {name!r} timed out after {limit}s', is_error=True)
         return _truncate_outcome(outcome)
 
 

@@ -59,6 +59,37 @@ def dangling_tool_calls(session: Session) -> list[ToolCallBlock]:
     return list(pending.values())
 
 
+def repair_background_jobs(session: Session) -> tuple[str, ...]:
+    """把"起了但没有结果"的后台任务补成 `killed`（进程重启后它不可能还在跑）。
+
+    与 `repair_dangling_tool_calls` 同一模式：**修复必须写进日志**，否则状态栏的投影
+    会永远显示"在跑"，而那个任务早随进程消失了。
+    """
+    started = [event for event in session.events if event.type == 'tool/background/start']
+    if not started:
+        return ()
+    done = {event.data.get('job_id') for event in session.events
+            if event.type == 'tool/background/result' and isinstance(event.data, dict)}
+    repaired: list[str] = []
+    for event in started:
+        data = event.data if isinstance(event.data, dict) else {}
+        job_id = data.get('job_id')
+        if job_id in done:
+            continue
+        session.append('tool/background/result', {
+            'job_id': job_id,
+            'call_id': data.get('call_id', ''),
+            'tool': data.get('tool', ''),
+            'status': 'killed',
+            'detail': 'process restarted before the job settled',
+            'output': '',
+            'lossy': False,
+            'elapsed_ms': 0,
+        }, ignorable=True)
+        repaired.append(str(job_id))
+    return tuple(repaired)
+
+
 def repair_dangling_tool_calls(session: Session) -> tuple[str, ...]:
     """补齐悬空的工具调用，返回被修好的 `call_id`（没有要修的返回空元组）。
 
@@ -80,4 +111,6 @@ def repair_dangling_tool_calls(session: Session) -> tuple[str, ...]:
             create_tool_result_message(call.id, REPAIR_TEXT, True),
             surface_op='append',
         )
+    # 后台任务同样要收口：进程重启后"在跑"的任务不可能还在跑（状态栏也靠它）
+    repair_background_jobs(session)
     return tuple(call.id for call in calls)

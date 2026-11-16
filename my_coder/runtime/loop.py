@@ -566,6 +566,84 @@ async def _run_group(agent, turn: int, step: int, group: list[ToolCallBlock], mo
     return started
 
 
+def _job_label(arguments: dict) -> str:
+    """给任务一个短标签（状态栏/通知里用）——不解析工具语义，只取最常见的几个键。"""
+    raw = (arguments.get('file_path') or arguments.get('pattern')
+           or arguments.get('query') or arguments.get('path') or '')
+    text = str(raw).strip()
+    return (text[:60] + '…') if len(text) > 60 else text
+
+
+def _record_job_start(agent, call: ToolCallBlock, job) -> None:
+    """落一条"任务开始"的痕迹事件（审计 + 状态栏投影的唯一依据）。"""
+    agent.session.append('tool/background/start', {
+        'job_id': job.id, 'call_id': call.id, 'tool': call.name, 'label': job.label,
+    }, ignorable=True)
+
+
+def _settle_notice(agent, call: ToolCallBlock):
+    """任务 settle 时：先落审计事件，再往 inbox 塞一条完成通知（模型下一个 turn 看到）。
+
+    通知里**必须点名 `job_output`**——否则模型不知道下一步干什么（DSH 的措辞同理）。
+    """
+    def on_settle(job) -> None:
+        agent.session.append('tool/background/result', {
+            'job_id': job.id, 'call_id': call.id, 'tool': job.tool, 'label': job.label,
+            'status': job.status, 'detail': job.detail, 'output': job.output,
+            'lossy': job.lossy, 'elapsed_ms': int(job.elapsed() * 1000),
+        }, ignorable=True)
+        try:
+            agent.followup(
+                f'[后台任务 {job.id} {job.status} · {job.elapsed():.1f}s · {job.tool}] '
+                f'{job.detail}。用 job_output 读输出'
+                f'{"（已截断 lossy）" if job.lossy else ""}；job_list 看全部后台任务。')
+        except Exception:        # noqa: BLE001 - 通知投递失败不影响任务本身
+            pass
+    return on_settle
+
+
+def _start_job(agent, call: ToolCallBlock, arguments: dict, *, adopted=None):
+    """起（或接管）一个后台任务：执行时**不套 timeout_s**，时限由 job 自己管。"""
+    common = dict(session_id=agent.session.id, tool=call.name, label=_job_label(arguments),
+                  on_settle=_settle_notice(agent, call))
+    if adopted is None:
+        return agent.jobs.start(
+            work=lambda: agent.tools.execute(call.name, arguments, agent, timeout_s=None),
+            **common)
+    return agent.jobs.adopt(task=adopted, **common)
+
+
+def _started_message(call: ToolCallBlock, job) -> Message:
+    return create_tool_result_message(
+        call.id,
+        f'started background job {job.id} ({job.tool}). It keeps running while you continue; '
+        'you will get a message when it settles. Do NOT poll — use job_output only when you '
+        'need the partial output now, and job_kill to stop it.',
+        False)
+
+
+async def _run_with_detach(agent, call: ToolCallBlock, spec, arguments: dict) -> Message:
+    """前台跑 `detach_after_s`：到点**不取消**，把同一个 Task 接管成后台任务继续跑。
+
+    `asyncio.shield` 是关键：`wait_for` 超时只取消 shield，底层 Task 不受影响。
+    """
+    pending = asyncio.create_task(
+        agent.tools.execute(call.name, arguments, agent, timeout_s=None))
+    try:
+        outcome = await asyncio.wait_for(asyncio.shield(pending), spec.detach_after_s)
+    except TimeoutError:
+        job = _start_job(agent, call, arguments, adopted=pending)
+        _record_job_start(agent, call, job)
+        return create_tool_result_message(
+            call.id,
+            f'still running after {spec.detach_after_s}s — moved to background job {job.id} '
+            '(NOT cancelled). You will get a message when it settles; job_output for partial output.',
+            False)
+    except Exception as error:                       # noqa: BLE001 - 失败降级为结果
+        return create_tool_result_message(call.id, f'{type(error).__name__}: {error}', True)
+    return create_tool_result_message(call.id, outcome.content, outcome.is_error)
+
+
 async def _run_one(agent, call: ToolCallBlock) -> Message:
     """跑一个工具调用，**只返回结果消息**（落盘由 `_run_group` 按模型顺序统一做）。
 
@@ -595,6 +673,15 @@ async def _run_one(agent, call: ToolCallBlock) -> Message:
                 'call_id': call.id, 'name': call.name, 'reason': 'not-approved',
             })
             return create_tool_result_message(call.id, 'skipped: user did not approve', True)
+        # ---- 工具级异步（docs/notes/proposed/feature/2026-11-16-async-tool-calls.md）----
+        # ① 模型显式要后台：起任务、立刻返回 job id（协议仍完整：这条 tool/result 就是它的答案）
+        if spec.detachable and arguments.get('run_in_background') is True:
+            job = _start_job(agent, call, arguments)
+            _record_job_start(agent, call, job)
+            return _started_message(call, job)
+        # ② 前台超时 → **转后台**（不取消任务）：DSH 的 enableForegroundTimeoutDetach
+        if spec.detachable and spec.detach_after_s is not None:
+            return await _run_with_detach(agent, call, spec, arguments)
         outcome = await agent.tools.execute(call.name, arguments, agent)
     except Exception as error:  # noqa: BLE001 - 工具失败必须变成 is_error 结果，不能炸掉循环
         outcome = ToolOutcome(content=f'{type(error).__name__}: {error}', is_error=True)

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from ..capability.llm import FakeLlm, OpenAiCompatibleLlm
 from ..runtime.agent import Agent
+from ..state.jobs import build_jobs_status
 from ..state.progress import ProgressPolicy
 from ..state.prompt import PromptRegistry
 from ..state.runtime_status import RuntimeStatusRegistry
@@ -117,6 +118,7 @@ def _runtime_status(sessions_dir: Path, default_workspace: str,
                                       hint=recall_guidance)
 
         status.register('sessions', sessions)
+    status.register('jobs', build_jobs_status)   # 后台任务（日志投影）
     return status
 
 
