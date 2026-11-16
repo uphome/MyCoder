@@ -20,6 +20,7 @@ import json
 from types import SimpleNamespace
 
 from my_coder.runtime.loop import _run_one
+from my_coder.state.inbox import Inbox
 from my_coder.state.jobs import JobRegistry, build_jobs_status
 from my_coder.state.recovery import repair_background_jobs
 from my_coder.state.registry import ToolSpec
@@ -38,7 +39,11 @@ def _agent(tmp_path, *, extra_spec: ToolSpec | None = None):
         session=session,
         tools=tools,
         jobs=JobRegistry(),
+        inbox=Inbox(session),
+        # `_settle_notice` 会按 `status` 选投递方式（忙 → steer 下一步；空闲 → followup 开回合）
+        status='idle',
         followup=lambda text, rpc_id='': notices.append(text),
+        steer=lambda text, rpc_id='': notices.append(text),
     )
     return agent, notices
 
@@ -312,3 +317,70 @@ def test_job_output_rejects_string_wait_and_does_not_block(tmp_path):
     assert not quick.is_error, quick.content
     assert elapsed < 1.0, f'wait="false" 不该阻塞（实际 {elapsed:.1f}s）'
     assert bad.is_error and 'wait must be a boolean' in bad.content
+
+
+def test_settle_notice_steers_while_running_and_follows_up_when_idle(tmp_path):
+    """对齐 DSH 的投递语义（`packages/jobs/tool-jobs`）：忙 → 注入下一步；空闲 → 开新回合。"""
+    from my_coder.runtime.loop import _settle_notice
+
+    agent, notices = _agent(tmp_path)
+    calls = {'steer': 0, 'followup': 0}
+
+    def _steer(text, rpc_id=''):
+        calls['steer'] += 1
+        notices.append(text)
+
+    def _followup(text, rpc_id=''):
+        calls['followup'] += 1
+        notices.append(text)
+
+    agent.steer = _steer            # type: ignore[method-assign]
+    agent.followup = _followup      # type: ignore[method-assign]
+    job = SimpleNamespace(id='job-x', status='completed', detail='completed', tool='read_file',
+                          label='a.txt', lossy=False, elapsed=lambda: 1.0, output='ok')
+
+    agent.status = 'running'
+    _settle_notice(agent, _call('c7', 'read_file'))(job)
+    assert calls == {'steer': 1, 'followup': 0}, '忙的时候必须注入下一步（别等这一轮结束）'
+
+    agent.status = 'idle'
+    _settle_notice(agent, _call('c8', 'read_file'))(job)
+    assert calls == {'steer': 1, 'followup': 1}, '空闲的时候才开新回合（DSH 的默认 wakeup）'
+
+
+def test_leftover_next_step_is_carried_into_the_next_turn(tmp_path):
+    """`next-step` 只在当前回合的 step≥2 被 claim；落在最后一步之后的插队消息必须顺延。
+
+    典型场景：后台任务完成通知在回合收尾的瞬间到达。不顺延的话它会永远搁在
+    `next-step` 里（下回合只 claim `next-turn`），而 `has_pending` 又一直是真。
+    """
+    from my_coder.capability.llm import FakeLlm
+    from my_coder.runtime.agent import Agent
+    from my_coder.runtime.loop import run_turn
+    from my_coder.state.prompt import PromptRegistry
+    from my_coder.state.registry import ToolRegistry
+    from my_coder.values.messages import TextBlock, create_user_message
+
+    session = Session(id='carry')
+    agent = Agent(session=session, llm=FakeLlm([{'text': '收到', 'finish_reason': 'stop'}]),
+                  prompt=PromptRegistry(), tools=ToolRegistry(),
+                  options={'provider': 'fake', 'model': 'fake-model'})
+    agent.inbox.append('next-step', create_user_message([TextBlock(text='后台任务完成通知')]))
+
+    asyncio.run(run_turn(agent))
+
+    assert not agent.inbox.next_step, '遗留的 next-step 必须被顺延并认领（不能搁死）'
+    assert any(event.type == 'user/message' for event in session.events), '它要真的成为模型输入'
+
+
+def test_inbox_carry_over_is_the_inverse_of_promote(tmp_path):
+    """`carry_over` = `promote` 的逆操作：next-step → next-turn，且摘除那步不是"丢弃"。"""
+    from my_coder.values.messages import TextBlock, create_user_message
+
+    agent, _ = _agent(tmp_path)
+    message = create_user_message([TextBlock(text='通知')])
+    agent.inbox.append('next-step', message)
+
+    assert agent.inbox.carry_over(message.id) is True
+    assert agent.inbox.next_step == () and [m.id for m in agent.inbox.next_turn] == [message.id]
+    assert agent.inbox.carry_over(message.id) is False, '已在 next-turn：幂等返回 False'

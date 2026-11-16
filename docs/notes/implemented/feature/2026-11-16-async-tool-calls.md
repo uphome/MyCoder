@@ -56,9 +56,15 @@ detach_after_s: float | None = None  # 前台超过这个秒数就转后台（No
 - **审计**：`tool/background/start`（起任务）与 `tool/background/result`
   （`status / detail / output / lossy / elapsed_ms`）两个**痕迹事件**（`ignorable=True`，
   词汇增长不 bump 版本）；
-- **模型可见**：settle 时 `agent.followup(...)` 往 inbox **splice 一条通知**（持久化，符合
+- **模型可见**：settle 时按 **DSH 的投递语义**（`packages/jobs/tool-jobs`：idle 时 `wakeup`
+  开新回合、busy 时"注入下一步"）投递一条通知：**忙 → `agent.steer(...)`**（下一个 step 就看到，
+  长回合里不用等到收尾）、**空闲 → `agent.followup(...)`**（开一个新回合）。通知走 inbox
+  **splice**（持久化，符合
   "入队即记账"），文本形如
   `[后台任务 job-7f3a completed · 4.2s · read_file] completed。用 job_output 读输出；job_list 看全部后台任务。`
+- **遗留消息不搁死**：`next-step` 只在**当前回合**的 step≥2 被 claim，所以 `run_turn` 开头会把上一回合
+  遗留的 `next-step` 用 `Inbox.carry_over`（`promote` 的逆操作）顺延到 `next-turn` ⇒ 完成通知即使
+  落在"最后一步之后"，也一定能在下一个回合被模型看到。
   ——**必须点名 `job_output`**，否则模型不知道下一步干什么；
 - **状态栏**：`state/jobs.py::build_jobs_status` 注册为运行时状态贡献者（`app/factory.py` 一行），
   形如 `⏳ 后台任务 1 个：job-7f3a · read_file · a.txt`；

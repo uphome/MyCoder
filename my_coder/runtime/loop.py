@@ -123,6 +123,10 @@ async def run_turn(agent) -> bool:
     try:
         step = 0
         target = 'next-turn'
+        # 上一回合可能留下没被认领的 next-step（例如后台任务完成通知正好落在最后一步之后）：
+        # 顺延到 next-turn，否则它会永远搁在 next-step 里（下回合只 claim next-turn）。
+        for leftover in agent.inbox.next_step:          # 注意：它是 @property，不是方法
+            agent.inbox.carry_over(leftover.id)
         agent.progress.reset()      # 回合是收敛的自然边界：计数与收尾标志都从头来
         closing_step = False
         while True:
@@ -598,10 +602,15 @@ def _settle_notice(agent, call: ToolCallBlock):
             'status': job.status, 'detail': job.detail, 'output': job.output,
             'lossy': job.lossy, 'elapsed_ms': int(job.elapsed() * 1000),
         }, ignorable=True)
-        agent.followup(
-            f'[后台任务 {job.id} {job.status} · {job.elapsed():.1f}s · {job.tool}] '
-            f'{job.detail}。用 job_output 读输出'
-            f'{"（已截断 lossy）" if job.lossy else ""}；job_list 看全部后台任务。')
+        notice = (f'[后台任务 {job.id} {job.status} · {job.elapsed():.1f}s · {job.tool}] '
+                  f'{job.detail}。用 job_output 读输出'
+                  f'{"（已截断 lossy）" if job.lossy else ""}；job_list 看全部后台任务。')
+        # 对齐 DSH 的投递语义（`packages/jobs/tool-jobs`：idle 时 `wakeup` 开新回合、
+        # busy 时"注入下一步"）：忙 → steer（下一个 step 就看到）；空闲 → followup（开回合）。
+        if agent.status == 'running':
+            agent.steer(notice)
+        else:
+            agent.followup(notice)
     return on_settle
 
 

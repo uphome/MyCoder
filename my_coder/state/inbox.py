@@ -161,6 +161,26 @@ class Inbox:
         self._splice('next-step', len(self._state['next-step']), 0, [message])
         return True
 
+    def carry_over(self, message_id: str) -> bool:
+        """把一条**没被认领**的插队消息顺延回 next-turn（`promote` 的逆操作）。
+
+        为什么需要：`next-step` 只在**当前回合**的 step≥2 被 claim（`loop.run_turn`
+        的 `target` 在首步后切到 `next-step`）。若一条插队消息恰好在**最后一步之后**
+        才到（典型：后台任务完成通知），它会永远搁在 `next-step` 里——下个回合从
+        `next-turn` 开始，没人认领它，而 `has_pending` 又一直是真 ⇒ 空转风险。
+        搬家同 `promote`：摘除那步 `discard=False`（这不是丢弃，是搬家）。
+        返回 False = 没找到，或它本来就在 next-turn（幂等）。
+        """
+        located = self._locate(message_id)
+        if located is None:
+            return False
+        target, index = located
+        if target != 'next-step':
+            return False
+        message = self._splice(target, index, 1, [], discard=False)[0]
+        self._splice('next-turn', len(self._state['next-turn']), 0, [message])
+        return True
+
     def peek(self, target: str) -> list[Message]:
         """**只读**地看一眼这一步会认领到哪些消息（不改队列、不记账）。
 
