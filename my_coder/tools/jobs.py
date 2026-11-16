@@ -18,6 +18,9 @@ from ..state.registry import ToolSpec
 from ..values.messages import ToolOutcome
 
 _STATUSES = 'running / stopping / completed / killed / failed'
+# 有界等待的上限与工具的 timeout_s 绑成一处，避免两处硬编码漂移
+_WAIT_MIN_MS = 0
+_WAIT_MAX_MS = 60_000
 
 
 def register(registry) -> None:
@@ -40,10 +43,21 @@ def register(registry) -> None:
             timeout_ms = int(args.get('timeout_ms', 10_000))
         except (TypeError, ValueError):
             return ToolOutcome('timeout_ms must be an integer', is_error=True)
-        if timeout_ms < 0 or timeout_ms > 60_000:
-            return ToolOutcome('timeout_ms must be within [0, 60000]', is_error=True)
-        job, delta = await agent.jobs.collect(
-            job_id, wait=bool(args.get('wait', False)), timeout_ms=timeout_ms)
+        if timeout_ms < _WAIT_MIN_MS or timeout_ms > _WAIT_MAX_MS:
+            return ToolOutcome(
+                f'timeout_ms must be within [{_WAIT_MIN_MS}, {_WAIT_MAX_MS}]', is_error=True)
+        # `_validate_arguments` 只查"必填齐全 + 不许多余"，**不做类型校验**——所以这里必须
+        # 严格解析：`bool("false")` 是 True，会让一次本该立即返回的调用意外阻塞 60 s。
+        raw_wait = args.get('wait', False)
+        if isinstance(raw_wait, bool):
+            wait = raw_wait
+        elif isinstance(raw_wait, str) and raw_wait.strip().lower() in ('true', '1', 'yes'):
+            wait = True
+        elif isinstance(raw_wait, str) and raw_wait.strip().lower() in ('false', '0', 'no'):
+            wait = False
+        else:
+            return ToolOutcome('wait must be a boolean (true/false)', is_error=True)
+        job, delta = await agent.jobs.collect(job_id, wait=wait, timeout_ms=timeout_ms)
         if job is None:
             return ToolOutcome(
                 f'unknown job {job_id!r} (it may have settled in a previous process; '
@@ -94,7 +108,7 @@ def register(registry) -> None:
         },
         execute=job_output,
         execution_mode='parallel',
-        timeout_s=70.0,
+        timeout_s=_WAIT_MAX_MS / 1000 + 10,
     ))
     registry.register(ToolSpec(
         name='job_kill',

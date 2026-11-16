@@ -284,3 +284,31 @@ def test_settle_bookkeeping_failure_does_not_break_the_job(tmp_path):
     job = asyncio.run(scenario())
     assert job.status == 'completed', '记账失败不该改变任务本身的成败'
     assert job.task is not None and job.task.exception() is None, '任务不许以未处理异常收尾'
+
+
+def test_job_output_rejects_string_wait_and_does_not_block(tmp_path):
+    """OCR 追加：`_validate_arguments` **不做类型校验**，所以 `wait="false"` 会被 `bool()` 判成 True。
+
+    修法：严格解析（bool / 'true|1|yes' / 'false|0|no'，其余 is_error）。这里验证
+    `wait="false"` 在**运行中**的任务上立即返回（不意外阻塞），非法值降级 is_error。
+    """
+    import time as _time
+
+    agent, _ = _agent(tmp_path)
+
+    async def scenario():
+        job = agent.jobs.start(session_id=agent.session.id, tool='fake', label='slow',
+                               work=lambda: asyncio.sleep(10))
+        await asyncio.sleep(0)
+        spec = agent.tools.get('job_output')
+        started = _time.monotonic()
+        quick = await spec.execute({'job_id': job.id, 'wait': 'false'}, agent, None)
+        elapsed = _time.monotonic() - started
+        bad = await spec.execute({'job_id': job.id, 'wait': 'maybe'}, agent, None)
+        agent.jobs.cancel(job.id)
+        return quick, elapsed, bad
+
+    quick, elapsed, bad = asyncio.run(scenario())
+    assert not quick.is_error, quick.content
+    assert elapsed < 1.0, f'wait="false" 不该阻塞（实际 {elapsed:.1f}s）'
+    assert bad.is_error and 'wait must be a boolean' in bad.content
