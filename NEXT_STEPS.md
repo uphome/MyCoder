@@ -895,3 +895,8 @@ provider/model）+ 不进模型历史 / 取消留档且 `partial` 是半截文�
 4. 每步跑测试（全量 pytest 必须全绿）；阶段一收尾时更新 README 与 ARCHITECTURE 定稿
 > **issue 编号映射（2026-10-03）**：#42 → #51、#44 → #52——两者曾被误删（GitHub 删除不可逆），
 > 已按删除前的存档（`.eval/issues-backup/`）原样重建并关闭；代码与文档里对 #42/#44 的引用按此对应。
+
+> **工具级异步调用（2026-11-16 提出，方案已定、未实施）**：长 I/O 工具阻塞 ReAct 的 step 直到
+> `timeout_s`（默认 60 s）后白干。方案：`ToolSpec.detachable` + `detach_after_s`（v1 只给只读文件类工具）、
+> 前台超时**转后台**而非杀掉、完成后**自动 splice 进 inbox**、配 `job_output`/`job_kill` 与状态栏。
+> 已定的三点取舍与验收判据见 [设计记录](docs/notes/proposed/feature/2026-11-16-async-tool-calls.md)。
