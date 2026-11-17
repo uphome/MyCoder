@@ -1,6 +1,7 @@
 import { translate, type TranslationMessage } from '../../i18n/index.js'
-import { readMessageEvent } from './parseEvent.js'
-import { readServerSentEvents } from './sse.js'
+// MyCoder（方案 2）：聊天流改为**直接解析我们自己的 `/chat` SSE**（见 ours.ts）。
+// 上游的 Anthropic 客户端只保留给附件/语音等尚未接的接口。
+import { oursVerifyKey, streamOurChat } from './ours.js'
 import type {
   ApiErrorBody,
   CreateMessageRequest,
@@ -89,14 +90,9 @@ const anthropicHeaders = (apiKey: string, beta: boolean): Record<string, string>
   ...(beta ? { 'anthropic-beta': FILES_BETA } : {}),
 })
 
-/** 用 GET /models 校验 API Key（不产生费用） */
-export const verifyApiKey = async (apiKey: string, signal?: AbortSignal): Promise<void> => {
-  await request(`${API_ORIGIN}/models`, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal,
-  })
-}
+/** key 校验：走我们自己的 `/models`（M1 不校验真伪，形状对就放行）。 */
+export const verifyApiKey = async (apiKey: string, signal?: AbortSignal): Promise<void> =>
+  oursVerifyKey(apiKey, signal)
 
 /**
  * POST /anthropic/v1/files 上传附件（不设过期时间，会话里的历史附件一直可用）。
@@ -130,60 +126,21 @@ export const deleteFile = async (apiKey: string, fileId: string): Promise<void> 
   })
 }
 
-const hasFile = (body: CreateMessageRequest) =>
-  body.messages.some(
-    (message) =>
-      typeof message.content !== 'string' &&
-      message.content.some((block) => block.type === 'image' || block.type === 'document')
-  )
-
 /**
  * POST /anthropic/v1/messages（stream: true），逐个产出流式事件，收到 message_stop 时结束。
  * ping、保活注释与无法解析的内容不产出；中止请求时抛出 signal 的 AbortError。
+ */
+/**
+ * 聊天流：**我们自己的协议**（方案 2，见 tasks 里的设计记录）。
+ *
+ * `body` 是上游按 Anthropic 形状拼的请求体；我们只从中取"最后一条用户文本"——
+ * 会话 id、历史、压缩、工具、审批全在后端（`my_coder/`），前端不做状态。
  */
 export async function* streamMessage(
   apiKey: string,
   body: CreateMessageRequest,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
-  const response = await request(`${ANTHROPIC_BASE_URL}/messages`, {
-    method: 'POST',
-    headers: {
-      ...anthropicHeaders(apiKey, hasFile(body)),
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-    },
-    body: JSON.stringify({ ...body, stream: true }),
-    signal,
-  })
-  const contentType = response.headers.get('Content-Type') ?? ''
-  if (!response.body || !contentType.includes('text/event-stream')) {
-    throw await readErrorResponse(response, 'protocol', '')
-  }
-  for await (const { event: eventName, data } of readServerSentEvents(response.body, signal)) {
-    let payload: unknown
-    try {
-      payload = JSON.parse(data)
-    } catch {
-      if (eventName !== 'error') {
-        continue
-      }
-    }
-    if (isErrorBody(payload)) {
-      throw new ApiError('stream', payload.error.message)
-    }
-    if (eventName === 'error') {
-      throw new ApiError('stream', data)
-    }
-    const event = readMessageEvent(payload)
-    if (!event) {
-      continue
-    }
-    yield event
-    if (event.type === 'message_stop') {
-      return
-    }
-  }
-  // 服务端没有提供错误内容时保持为空，不推测断流原因。
-  throw new ApiError('interrupted', '')
+  void apiKey // M1 不需要 key：鉴权属于宿主（同源服务），不是这条流的职责
+  yield* streamOurChat(body, signal)
 }
