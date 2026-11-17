@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -41,8 +41,26 @@ from .titles import auto_title, clean_title, first_user_message_just_landed
 _ROOT = Path(__file__).resolve().parents[2]
 
 app = FastAPI(title='MyCoder web')
+# Anthropic 兼容层（M0 mock；M1 换成直接解析我们自己的 SSE）：给 fork 来的新前端用
+from .anthropic import router as _anthropic_router  # noqa: E402 - 循环导入约束下放在 app 之后
+
+app.include_router(_anthropic_router)
 # 前端依赖（marked / DOMPurify 本地 vendor，免 CDN）
 app.mount('/vendor', StaticFiles(directory=_ROOT / 'web' / 'vendor'), name='vendor')
+
+# 新版前端（组件化，视觉层 fork 自 deepseek-ai/chat-demo）：`pnpm build` 的产物在
+# `web/ui/dist`，整目录挂到 /ui。**运行期零构建、零 Node**（产物入库）；没构建过就
+# 给一条明确指引，而不是 404 到别的东西上。
+_UI_DIST = _ROOT / 'web' / 'ui' / 'dist'
+if (_UI_DIST / 'index.html').is_file():
+    app.mount('/ui', StaticFiles(directory=_UI_DIST, html=True), name='ui')
+else:
+    @app.get('/ui')
+    @app.get('/ui/{rest:path}')
+    def ui_not_built(rest: str = '') -> Response:
+        return Response(
+            'web/ui/dist 还没构建。跑一下：cd web/ui && pnpm install && pnpm build\n',
+            status_code=404, media_type='text/plain; charset=utf-8')
 
 DONE_MARKER = object()
 

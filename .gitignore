@@ -8,3 +8,4 @@ __pycache__/
 .eval/
 eval/recall/RENDERING_SAMPLE.md
 _tmp_*.txt
+web/ui/node_modules/

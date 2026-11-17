@@ -1,0 +1,1 @@
+"use strict";(self.rspackChunkmy_coder_ui=self.rspackChunkmy_coder_ui||[]).push([[9150],{45(e,r,c){c.d(r,{createArchitectureServices:()=>s.S});var s=c(1544);c(791)}}]);
