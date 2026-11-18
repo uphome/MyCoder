@@ -1,12 +1,12 @@
 /**
- * 工具卡 + 审批卡（M2）。
+ * Agent 时间线（M2.5）：**按发生顺序**渲染「思考 → 工具 → 结果 → 再思考」。
  *
- * 视觉全部取自上游：容器用 `AgentActivityBlock.module.css` 里的设计 token，
- * 按钮直接用上游的 `<Button>` 基元（variant/size 同款），所以和设置台、输入区
- * 那些按钮是同一套尺寸与配色。
+ * 与上游分工：
+ *   - 思考不再走上游（它把所有思考聚在消息顶部，见 `ours.ts` 的 reasoning 分支）；
+ *   - 正文仍走上游的 text 块（Markdown 渲染复用它）；
+ *   - 本组件只画"过程区"，插在最后一条助手消息里（`AssistantMessage.tsx`）。
  *
- * 一张卡 = 一次工具调用；状态点表示 running/done/error；点抬头展开结果。
- * 审批卡带**批准 / 拒绝**两个按钮，直接打 `POST /approval/respond`。
+ * 视觉全部取上游设计 token，按钮用上游 `<Button>` 基元。
  */
 
 import clsx from 'clsx'
@@ -14,8 +14,9 @@ import { useState, useSyncExternalStore } from 'react'
 import { respondApproval } from '../../services/api/ours.js'
 import {
   agentActivity,
-  type ApprovalActivity,
-  type ToolActivity,
+  type ApprovalEntry,
+  type ThinkingEntry,
+  type ToolEntry,
 } from '../../services/chat/agentActivity.js'
 import { Button } from '../base/Button.js'
 import styles from './AgentActivityBlock.module.css'
@@ -27,8 +28,7 @@ const argsPreview = (text: string): string => {
   try {
     const parsed: unknown = JSON.parse(raw)
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      const entries = Object.entries(parsed as Record<string, unknown>)
-      const first = entries[0]
+      const first = Object.entries(parsed as Record<string, unknown>)[0]
       if (first) {
         const value = first[1]
         const rendered = typeof value === 'string' ? value : JSON.stringify(value)
@@ -41,10 +41,25 @@ const argsPreview = (text: string): string => {
   return raw.length > 72 ? `${raw.slice(0, 72)}…` : raw
 }
 
-const statusLabel = (status: ToolActivity['status']): string =>
+const statusLabel = (status: ToolEntry['status']): string =>
   status === 'running' ? '执行中' : status === 'error' ? '失败' : '完成'
 
-const ToolCard = ({ item }: { item: ToolActivity }) => {
+/** 思考段：默认折叠，只显示字数；展开是纯文本（不做 Markdown，思考不属于"文档"）。 */
+const ThinkingBlock = ({ item }: { item: ThinkingEntry }) => {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className={styles.thinking}>
+      <button type="button" className={styles.thinkingHeader} onClick={() => setOpen((v) => !v)}>
+        <span className={styles.chevron}>{open ? '▾' : '▸'}</span>
+        <span className={styles.thinkingTitle}>思考</span>
+        <span className={styles.thinkingMeta}>{item.text.length} 字</span>
+      </button>
+      {open ? <pre className={styles.thinkingBody}>{item.text}</pre> : null}
+    </div>
+  )
+}
+
+const ToolCard = ({ item }: { item: ToolEntry }) => {
   const [open, setOpen] = useState(false)
   const preview = argsPreview(item.argumentsText)
   const hasResult = item.content.trim().length > 0
@@ -71,7 +86,7 @@ const ToolCard = ({ item }: { item: ToolActivity }) => {
   )
 }
 
-const ApprovalCard = ({ item }: { item: ApprovalActivity }) => {
+const ApprovalCard = ({ item }: { item: ApprovalEntry }) => {
   const [busy, setBusy] = useState(false)
   const answer = async (approved: boolean): Promise<void> => {
     setBusy(true)
@@ -86,7 +101,9 @@ const ApprovalCard = ({ item }: { item: ApprovalActivity }) => {
   return (
     <div className={clsx(styles.card, styles.approval)}>
       <div className={styles.cardHeaderStatic}>
-        <span className={clsx(styles.dot, item.status === 'pending' ? styles.pendingDot : styles.done)} />
+        <span
+          className={clsx(styles.dot, item.status === 'pending' ? styles.pendingDot : styles.done)}
+        />
         <span className={styles.name}>{item.name}</span>
         {preview ? <span className={styles.args}>{preview}</span> : null}
         <span className={styles.status}>
@@ -112,13 +129,11 @@ export const AgentActivityBlock = () => {
   if (items.length === 0) return null
   return (
     <div className={styles.wrap}>
-      {items.map((item) =>
-        item.kind === 'approval' ? (
-          <ApprovalCard key={`approval-${item.id}`} item={item} />
-        ) : (
-          <ToolCard key={`tool-${item.callId}`} item={item} />
-        )
-      )}
+      {items.map((item) => {
+        if (item.kind === 'thinking') return <ThinkingBlock key={item.id} item={item} />
+        if (item.kind === 'approval') return <ApprovalCard key={`approval-${item.id}`} item={item} />
+        return <ToolCard key={`tool-${item.callId}`} item={item} />
+      })}
     </div>
   )
 }

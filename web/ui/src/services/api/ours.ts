@@ -178,18 +178,12 @@ export async function* streamOurChat(
   }
 
   let index = 0
-  let thinkingOpen = false
   let textOpen = false
   let sawText = false
   let stopReason: 'end_turn' | 'max_tokens' | 'tool_use' | 'refusal' = 'end_turn'
 
   const ensureText = function* (): Generator<MessageStreamEvent> {
     if (textOpen) return
-    if (thinkingOpen) {
-      yield blockStop(index)
-      thinkingOpen = false
-      index += 1
-    }
     yield blockStart(index, { type: 'text', text: '' })
     textOpen = true
   }
@@ -199,13 +193,9 @@ export async function* streamOurChat(
   for await (const payload of readFrames(response, signal)) {
     switch (payload.type) {
       case 'reasoning': {
-        if (!payload.text) break
-        if (textOpen) break // 正文已经开始，迟到的思考不追（上游也没有"回退"语义）
-        if (!thinkingOpen) {
-          yield blockStart(index, { type: 'thinking', thinking: '', signature: '' })
-          thinkingOpen = true
-        }
-        yield blockDelta(index, { type: 'thinking_delta', thinking: payload.text })
+        // **思考不交给上游**：它会把所有思考聚在消息顶部。我们按时间线渲染
+        // （思考 → 工具 → 结果 → 再思考，见 agentActivity.thinking 的合并规则）。
+        agentActivity.thinking(payload.text ?? '')
         break
       }
       case 'chunk': {
@@ -244,10 +234,6 @@ export async function* streamOurChat(
     yield blockDelta(index, { type: 'text_delta', text: '（本轮没有文本输出，工具活动见上方卡片）' })
   }
 
-  if (thinkingOpen) {
-    yield blockStop(index)
-    index += 1
-  }
   if (textOpen) yield blockStop(index)
   yield messageEnd(stopReason)
   yield STOP_EVENT
