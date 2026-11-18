@@ -60,7 +60,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   return (
     <div className={styles.message}>
       {/* 工具卡 / 审批卡：只挂在最后一条助手消息下（活动是按"当前回复"记的） */}
-      {isLast ? <AgentActivityBlock /> : null}
+      {isLast ? <AgentActivityBlock streaming={streaming} /> : null}
       {refused ? null : (
         <ReplyArea
           message={message}
