@@ -1,0 +1,163 @@
+/* Agent 活动区（工具卡 + 审批卡）：取主题 token，和上游的消息体并列显示。 */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 10px;
+}
+
+.card {
+  border: 1px solid var(--ds-border, rgba(0, 0, 0, 0.1));
+  border-radius: 10px;
+  background: var(--ds-fill-2, rgba(0, 0, 0, 0.03));
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.cardError {
+  border-color: var(--ds-error, #c62828);
+}
+
+.approval {
+  background: var(--ds-fill-3, rgba(0, 0, 0, 0.05));
+}
+
+.pending {
+  border-color: var(--ds-accent, #4d6bfe);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cardHeader:disabled {
+  cursor: default;
+}
+
+.cardHeaderStatic {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--ds-text-3, #8b93a1);
+}
+
+.running {
+  background: var(--ds-accent, #4d6bfe);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.done {
+  background: var(--ds-success, #1a7f37);
+}
+
+.error {
+  background: var(--ds-error, #c62828);
+}
+
+.pendingDot {
+  background: var(--ds-accent, #4d6bfe);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.name {
+  font-family: var(--ds-font-mono, ui-monospace, monospace);
+  font-weight: 600;
+}
+
+.args {
+  color: var(--ds-text-2, #5a6270);
+  font-family: var(--ds-font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.status {
+  margin-left: auto;
+  color: var(--ds-text-3, #8b93a1);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.stats {
+  color: var(--ds-text-3, #8b93a1);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.result {
+  margin: 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--ds-border, rgba(0, 0, 0, 0.08));
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--ds-font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+
+.approve,
+.deny {
+  padding: 5px 12px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.approve {
+  border: 1px solid var(--ds-accent, #4d6bfe);
+  background: var(--ds-accent, #4d6bfe);
+  color: #fff;
+}
+
+.deny {
+  border: 1px solid var(--ds-border, rgba(0, 0, 0, 0.2));
+  background: transparent;
+  color: inherit;
+}
+
+.approve:disabled,
+.deny:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
