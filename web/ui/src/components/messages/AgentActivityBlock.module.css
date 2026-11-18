@@ -1,55 +1,56 @@
-/* Agent 活动区（工具卡 + 审批卡）：取主题 token，和上游的消息体并列显示。 */
+/* Agent 活动区（工具卡 + 审批卡）——**全部用上游的设计 token**。
+   上一版我用的是猜的变量名（--ds-border 之类）→ 全走灰色 fallback，所以显得和正文割裂。
+   约定（照 messages/ 下现有组件）：
+   - 正文 14px（--ds-font-size-m），次要信息 13px，圆角 12px；
+   - 颜色只用 --dsw-alias-*（语义层），代码块底色复用 --dsw-alias-markdown-code-block；
+   - 过渡用 --ds-transition-duration + --ds-ease-in-out。 */
 
 .wrap {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin: 6px 0 10px;
+  gap: 8px;
+  margin: 10px 0 14px;
 }
 
 .card {
-  border: 1px solid var(--ds-border, rgba(0, 0, 0, 0.1));
-  border-radius: 10px;
-  background: var(--ds-fill-2, rgba(0, 0, 0, 0.03));
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-2);
+  font-size: var(--ds-font-size-m, 14px);
   overflow: hidden;
-  font-size: 13px;
+  transition: border-color var(--ds-transition-duration) var(--ds-ease-in-out),
+    background-color var(--ds-transition-duration) var(--ds-ease-in-out);
 }
 
 .cardError {
-  border-color: var(--ds-error, #c62828);
+  border-color: var(--dsw-alias-state-error-primary);
 }
 
-.approval {
-  background: var(--ds-fill-3, rgba(0, 0, 0, 0.05));
-}
-
-.pending {
-  border-color: var(--ds-accent, #4d6bfe);
-}
-
-.cardHeader {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 8px 10px;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.cardHeader:disabled {
-  cursor: default;
-}
-
+.cardHeader,
 .cardHeaderStatic {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  background: none;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  text-align: left;
+}
+
+.cardHeader {
+  cursor: pointer;
+  transition: background-color var(--ds-transition-duration) var(--ds-ease-in-out);
+}
+
+.cardHeader:hover:enabled {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.cardHeader:disabled {
+  cursor: default;
 }
 
 .dot {
@@ -57,25 +58,22 @@
   height: 7px;
   border-radius: 50%;
   flex: 0 0 auto;
-  background: var(--ds-text-3, #8b93a1);
+  background: var(--dsw-alias-label-tertiary);
 }
 
-.running {
-  background: var(--ds-accent, #4d6bfe);
-  animation: pulse 1.2s ease-in-out infinite;
+.running,
+.pendingDot {
+  background: var(--dsw-alias-brand-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary) 18%, transparent);
+  animation: pulse 1.4s var(--ds-ease-in-out) infinite;
 }
 
 .done {
-  background: var(--ds-success, #1a7f37);
+  background: var(--dsw-static-green-500);
 }
 
 .error {
-  background: var(--ds-error, #c62828);
-}
-
-.pendingDot {
-  background: var(--ds-accent, #4d6bfe);
-  animation: pulse 1.2s ease-in-out infinite;
+  background: var(--dsw-alias-state-error-primary);
 }
 
 @keyframes pulse {
@@ -84,80 +82,63 @@
     opacity: 1;
   }
   50% {
-    opacity: 0.25;
+    opacity: 0.45;
   }
 }
 
 .name {
-  font-family: var(--ds-font-mono, ui-monospace, monospace);
-  font-weight: 600;
+  font-family: var(--ds-font-family-code);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
 }
 
 .args {
-  color: var(--ds-text-2, #5a6270);
-  font-family: var(--ds-font-mono, ui-monospace, monospace);
-  font-size: 12px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 0;
+  font-family: var(--ds-font-family-code);
+  font-size: 13px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .status {
   margin-left: auto;
-  color: var(--ds-text-3, #8b93a1);
-  font-size: 12px;
   flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .stats {
-  color: var(--ds-text-3, #8b93a1);
-  font-size: 12px;
   flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--dsw-alias-label-dimmed);
 }
 
 .result {
   margin: 0;
-  padding: 8px 10px;
-  border-top: 1px solid var(--ds-border, rgba(0, 0, 0, 0.08));
-  max-height: 260px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  max-height: 280px;
   overflow: auto;
-  font-family: var(--ds-font-mono, ui-monospace, monospace);
-  font-size: 12px;
-  line-height: 1.5;
+  background: var(--dsw-alias-markdown-code-block);
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--ds-font-family-code);
+  font-size: 13px;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 审批卡：用品牌色描边把"要你做决定"和普通工具卡区分开 */
+.approval {
+  border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, var(--dsw-alias-border-l2));
+  background: var(--dsw-alias-bg-layer-3);
 }
 
 .actions {
   display: flex;
   gap: 8px;
-  padding: 0 10px 10px;
-}
-
-.approve,
-.deny {
-  padding: 5px 12px;
-  border-radius: 8px;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.approve {
-  border: 1px solid var(--ds-accent, #4d6bfe);
-  background: var(--ds-accent, #4d6bfe);
-  color: #fff;
-}
-
-.deny {
-  border: 1px solid var(--ds-border, rgba(0, 0, 0, 0.2));
-  background: transparent;
-  color: inherit;
-}
-
-.approve:disabled,
-.deny:disabled {
-  opacity: 0.5;
-  cursor: default;
+  padding: 0 12px 12px;
 }
