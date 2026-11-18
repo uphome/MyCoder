@@ -15,7 +15,6 @@ import { SiteThumbnails } from '../search/SiteLogo.js'
 import { toggleSearchPanel, useSearchPanel } from '../search/searchPanelState.js'
 import { ReadAloudButton } from './ReadAloudButton.js'
 import { CopyButton } from './CopyButton.js'
-import { AgentActivityBlock } from './AgentActivityBlock.js'
 import { ReplyArea } from './ReplyArea.js'
 import { useReplyView } from './useReplyView.js'
 import {
@@ -59,8 +58,6 @@ export const AssistantMessage = memo(function AssistantMessage({
   const summaryEntry = `${message.id}-summary`
   return (
     <div className={styles.message}>
-      {/* 工具卡 / 审批卡：只挂在最后一条助手消息下（活动是按"当前回复"记的） */}
-      {isLast ? <AgentActivityBlock /> : null}
       {refused ? null : (
         <ReplyArea
           message={message}

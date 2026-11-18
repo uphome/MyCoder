@@ -13,7 +13,6 @@
  * 换句话说：**本文件是 M1 的过渡层，M2 起前端直接渲染我们的块**。
  */
 
-import { agentActivity } from '../chat/agentActivity.js'
 import type { MessageStreamEvent } from './types.js'
 
 /** 服务端会话 id：一个浏览器"对话"对应一个后端 session（M3 会换成多会话列表）。 */
@@ -43,15 +42,6 @@ type OursPayload = {
   name?: string
   reason?: string
   queue?: unknown
-  // 工具/审批相关的字段（M2 起渲染成卡片）
-  call_id?: string
-  arguments?: unknown
-  content?: string
-  is_error?: boolean
-  chars?: number
-  lines?: number
-  truncated?: boolean
-  id?: string
 }
 
 /** 从 Anthropic 请求体里取最后一条用户文本（`content` 可能是字符串或块数组）。 */
@@ -165,7 +155,6 @@ export async function* streamOurChat(
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
   const message = lastUserText(body)
-  agentActivity.reset()   // 新一条回复：上一轮的工具/审批卡片全部作废
   const response = await fetch('/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
@@ -182,6 +171,7 @@ export async function* streamOurChat(
   let textOpen = false
   let sawText = false
   let stopReason: 'end_turn' | 'max_tokens' | 'tool_use' | 'refusal' = 'end_turn'
+  const tools: string[] = []
 
   const ensureText = function* (): Generator<MessageStreamEvent> {
     if (textOpen) return
@@ -216,16 +206,7 @@ export async function* streamOurChat(
         break
       }
       case 'tool_call': {
-        agentActivity.toolCall(payload as unknown as Record<string, unknown>)
-        break
-      }
-      case 'tool_result': {
-        agentActivity.toolResult(payload as unknown as Record<string, unknown>)
-        break
-      }
-      case 'approval_request': {
-        // 审批钩子直接推来的自定义载荷（不是 session 事件）：M2 起渲染成带按钮的卡片
-        agentActivity.approval(payload as unknown as Record<string, unknown>)
+        if (payload.name) tools.push(payload.name)
         break
       }
       case 'turn_end': {
@@ -237,11 +218,13 @@ export async function* streamOurChat(
     }
   }
 
-  // 收尾：正文一次都没来时也要给一句可见的话（否则这条回复是空的）。
-  // 工具调用由卡片区呈现（M2），这里不再往正文里塞工具名。
+  // 收尾：正文一次都没来时也要给一句可见的话（否则这条回复是空的）
   if (!sawText) {
     yield* ensureText()
-    yield blockDelta(index, { type: 'text_delta', text: '（本轮没有文本输出，工具活动见上方卡片）' })
+    const note = tools.length > 0 ? `（本轮只执行了工具：${tools.join('、')}）` : '（本轮没有文本输出）'
+    yield blockDelta(index, { type: 'text_delta', text: note })
+  } else if (tools.length > 0) {
+    yield blockDelta(index, { type: 'text_delta', text: `\n\n> 🔧 本轮工具：${tools.join('、')}` })
   }
 
   if (thinkingOpen) {
@@ -260,14 +243,4 @@ export const oursVerifyKey = async (apiKey: string, signal?: AbortSignal): Promi
     signal,
   })
   if (!response.ok) throw new Error(`verify failed: HTTP ${response.status}`)
-}
-
-/** 回应一条审批请求（`POST /approval/respond`，形状见 web/app.py 的同名路由）。 */
-export const respondApproval = async (id: string, approved: boolean): Promise<void> => {
-  const response = await fetch('/approval/respond', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, approved }),
-  })
-  if (!response.ok) throw new Error(`approval respond failed: HTTP ${response.status}`)
 }
