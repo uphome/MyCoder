@@ -1,36 +1,44 @@
 /**
  * **我们自己的协议**（方案 2）：直接解析 `my_coder` 的 `/chat` SSE，而不是走 Anthropic 兼容层。
  *
- * 为什么要换成它：Anthropic 的协议词汇里没有"工具调用 / 审批 / 后台任务"的位置，
- * 那些是我们的核心语义。直连之后，前端拿到的是我们自己的帧：
+ * 为什么：Anthropic 的协议词汇里没有"工具调用 / 审批 / 后台任务"的位置，那些是我们的
+ * 核心语义。直连之后，前端拿到的是我们自己的帧：
  *
  *   queue_update → turn_start → user_message → request_start → chunk / reasoning
  *   → tool_call / tool_result / todo_update / queue_update → turn_end
  *
- * 这一版（M1）只把 **reasoning / chunk / turn_end** 映射成上游 UI 认识的
- * Anthropic 事件（thinking 块 + text 块），其余帧先"记账不用"：
- * 工具调用在 M2 会变成我们自己的卡片，审批在 M2 变成按钮。
- * 换句话说：**本文件是 M1 的过渡层，M2 起前端直接渲染我们的块**。
+ * M1 只映射 **reasoning / chunk / turn_end**（上游 UI 认识的 thinking 块 + text 块），
+ * 其余帧先"记账不用"。**本文件是过渡层**：等我们的块类型进前端后，前端直接渲染。
  */
 
 import type { MessageStreamEvent } from './types.js'
 
-/** 服务端会话 id：一个浏览器"对话"对应一个后端 session（M3 会换成多会话列表）。 */
+/** 服务端会话 id：**每个浏览器一个**（首次访问生成），避免多标签页共用一份历史。 */
 const SID_KEY = 'mycoder.sid'
+/** localStorage 不可用（隐私模式等）时的兜底会话——此时多标签确实会共享，已在文档说明。 */
+const FALLBACK_SID = 'web-ui'
+
+/** 生成随机 id：`crypto.randomUUID` 只在安全上下文可用（局域网 http 访问会缺失）。 */
+const randomId = (): string => {
+  const cryptoApi = globalThis.crypto
+  if (cryptoApi && typeof cryptoApi.randomUUID === 'function') return cryptoApi.randomUUID()
+  if (cryptoApi && typeof cryptoApi.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16)
+    cryptoApi.getRandomValues(bytes)
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+  }
+  return Math.random().toString(16).slice(2)
+}
 
 export const oursSessionId = (): string => {
   try {
-    return localStorage.getItem(SID_KEY) || 'web-ui'
+    const existing = localStorage.getItem(SID_KEY)
+    if (existing) return existing
+    const fresh = `web-${randomId()}`
+    localStorage.setItem(SID_KEY, fresh)
+    return fresh
   } catch {
-    return 'web-ui'
-  }
-}
-
-export const setOursSessionId = (sid: string): void => {
-  try {
-    localStorage.setItem(SID_KEY, sid)
-  } catch {
-    // 隐私模式下 localStorage 不可写：退化成固定会话，不影响聊天
+    return FALLBACK_SID
   }
 }
 
@@ -56,25 +64,43 @@ const lastUserText = (body: unknown): string => {
     if (Array.isArray(content)) {
       const texts = content
         .filter((block) => (block as { type?: string })?.type === 'text')
-        .map((block) => (block as { text?: string }).text ?? '')
+        .map((block) => (block as { text?: unknown }).text)
+        .filter((text): text is string => typeof text === 'string')
       if (texts.length > 0) return texts.join('')
     }
   }
   return ''
 }
 
+/** 解析一段 SSE 帧块（容忍 `data:` 后有没有空格；坏帧跳过）。 */
+function* parseFrames(block: string): Generator<OursPayload> {
+  for (const rawLine of block.split('\n')) {
+    const line = rawLine.trimEnd()
+    if (!line.startsWith('data:')) continue
+    const payloadText = line.slice('data:'.length).trimStart()
+    if (!payloadText) continue
+    try {
+      yield JSON.parse(payloadText) as OursPayload
+    } catch {
+      // 坏帧跳过：一帧坏了不能拖垮整条流
+    }
+  }
+}
+
 /** 逐帧读我们自己的 SSE（只有 `data: {...}` 行，没有 `event:` 行）。 */
-async function* readFrames(
-  response: Response,
-  signal: AbortSignal
-): AsyncGenerator<OursPayload> {
+async function* readFrames(response: Response, signal: AbortSignal): AsyncGenerator<OursPayload> {
   if (!response.body) throw new Error('chat failed: empty body')
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
   try {
     while (true) {
-      if (signal.aborted) return
+      if (signal.aborted) {
+        // 用户点了停止：**主动取消读取**，让连接立刻释放（否则要等服务端 EOF，
+        // 后端 sse_stream 的 finally 也就不能及时取消 agent）。
+        await reader.cancel()
+        return
+      }
       const { value, done } = await reader.read()
       if (done) break
       buffer += decoder.decode(value, { stream: true })
@@ -82,17 +108,12 @@ async function* readFrames(
       while (boundary >= 0) {
         const block = buffer.slice(0, boundary)
         buffer = buffer.slice(boundary + 2)
-        for (const line of block.split('\n')) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            yield JSON.parse(line.slice(6)) as OursPayload
-          } catch {
-            // 坏帧跳过（与旧前端一致：一帧坏了不能拖垮整条流）
-          }
-        }
+        yield* parseFrames(block)
         boundary = buffer.indexOf('\n\n')
       }
     }
+    // 连接结束时最后一段可能没有以空行收尾：flush 一次，否则最后一帧（常是 turn_end）会丢
+    if (buffer.trim()) yield* parseFrames(buffer)
   } finally {
     reader.releaseLock()
   }
@@ -144,21 +165,24 @@ const STOP_EVENT = { type: 'message_stop' } as unknown as MessageStreamEvent
 /**
  * 把一次 `/chat` 的流翻成上游 UI 能吃的 Anthropic 事件序列。
  *
- * 关键约定：
- * - 块**按需开**：先思考后正文；思考块一旦开了，正文开始时先 stop 再开新块；
+ * 约定：
+ * - 思考块先于正文开（正文开始时先 stop 思考块）；
  * - 工具调用在 M1 **不渲染**，只在回合结束时追加一行"本轮工具"提示（避免"静默干活"）；
- * - 流无论如何结束（正常 / 断线 / 取消），都必须补齐 block_stop 与 message_stop，
- *   否则上游会把这条回复永远标成"进行中"。
+ * - **异常/中止也要补齐 block_stop 与 message_stop**：否则上游会把这条回复永远标成"进行中"。
  */
 export async function* streamOurChat(
   body: unknown,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
   const message = lastUserText(body)
+  if (!message.trim()) {
+    // 纯附件消息在 M1 不支持（附件接口还没接）：必须让用户看见原因，别发一个必然 400 的请求
+    throw new Error('这条消息没有可发送的文本；M1 暂不支持只发附件的消息')
+  }
   const response = await fetch('/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ sid: oursSessionId(), message, request_id: crypto.randomUUID() }),
+    body: JSON.stringify({ sid: oursSessionId(), message, request_id: randomId() }),
     signal,
   })
   if (!response.ok) {
@@ -184,38 +208,56 @@ export async function* streamOurChat(
     textOpen = true
   }
 
+  /** 收尾：关掉还开着的块并补 message_stop（正常/异常/中止都要走到）。 */
+  const closeOpenBlocks = function* (): Generator<MessageStreamEvent> {
+    if (thinkingOpen) {
+      yield blockStop(index)
+      thinkingOpen = false
+      index += 1
+    }
+    if (textOpen) yield blockStop(index)
+    yield messageEnd(stopReason)
+    yield STOP_EVENT
+  }
+
   yield messageStart()
 
-  for await (const payload of readFrames(response, signal)) {
-    switch (payload.type) {
-      case 'reasoning': {
-        if (!payload.text) break
-        if (textOpen) break // 正文已经开始，迟到的思考不追（上游也没有"回退"语义）
-        if (!thinkingOpen) {
-          yield blockStart(index, { type: 'thinking', thinking: '', signature: '' })
-          thinkingOpen = true
+  try {
+    for await (const payload of readFrames(response, signal)) {
+      switch (payload.type) {
+        case 'reasoning': {
+          if (!payload.text) break
+          if (textOpen) break // 正文已经开始，迟到的思考不追（上游也没有"回退"语义）
+          if (!thinkingOpen) {
+            yield blockStart(index, { type: 'thinking', thinking: '', signature: '' })
+            thinkingOpen = true
+          }
+          yield blockDelta(index, { type: 'thinking_delta', thinking: payload.text })
+          break
         }
-        yield blockDelta(index, { type: 'thinking_delta', thinking: payload.text })
-        break
+        case 'chunk': {
+          if (!payload.text) break
+          yield* ensureText()
+          sawText = true
+          yield blockDelta(index, { type: 'text_delta', text: payload.text })
+          break
+        }
+        case 'tool_call': {
+          if (payload.name) tools.push(payload.name)
+          break
+        }
+        case 'turn_end': {
+          if (payload.reason === 'aborted') stopReason = 'refusal'
+          break
+        }
+        default:
+          break // queue_update / todo_update / user_message / turn_start … M2 再用
       }
-      case 'chunk': {
-        if (!payload.text) break
-        yield* ensureText()
-        sawText = true
-        yield blockDelta(index, { type: 'text_delta', text: payload.text })
-        break
-      }
-      case 'tool_call': {
-        if (payload.name) tools.push(payload.name)
-        break
-      }
-      case 'turn_end': {
-        if (payload.reason === 'aborted') stopReason = 'refusal'
-        break
-      }
-      default:
-        break // queue_update / todo_update / user_message / turn_start … M2 再用
     }
+  } catch (error) {
+    // 网络中断 / fetch 被 abort：先把该关的关上，别让 UI 停在"进行中"
+    yield* closeOpenBlocks()
+    throw error
   }
 
   // 收尾：正文一次都没来时也要给一句可见的话（否则这条回复是空的）
@@ -226,17 +268,10 @@ export async function* streamOurChat(
   } else if (tools.length > 0) {
     yield blockDelta(index, { type: 'text_delta', text: `\n\n> 🔧 本轮工具：${tools.join('、')}` })
   }
-
-  if (thinkingOpen) {
-    yield blockStop(index)
-    index += 1
-  }
-  if (textOpen) yield blockStop(index)
-  yield messageEnd(stopReason)
-  yield STOP_EVENT
+  yield* closeOpenBlocks()
 }
 
-/** key 校验：我们的 `/models` 永远 200（M1 不校验 key，留着 API 秒在设置台里能过）。 */
+/** key 校验：我们的 `/models` 永远 200（M1 不校验 key，留着设置台能过）。 */
 export const oursVerifyKey = async (apiKey: string, signal?: AbortSignal): Promise<void> => {
   const response = await fetch('/models', {
     headers: { Authorization: `Bearer ${apiKey}` },

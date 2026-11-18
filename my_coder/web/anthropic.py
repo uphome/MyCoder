@@ -59,8 +59,10 @@ def _last_user_text(body: dict) -> str:
         if isinstance(content, str):
             return content
         if isinstance(content, list):
-            texts = [block.get('text', '') for block in content
-                     if isinstance(block, dict) and block.get('type') == 'text']
+            # 只收字符串 text：坏客户端可能把 text 传成 null/数字（OCR 审核发现）
+            texts = [block['text'] for block in content
+                     if isinstance(block, dict) and block.get('type') == 'text'
+                     and isinstance(block.get('text'), str)]
             if texts:
                 return ''.join(texts)
     return ''
@@ -151,7 +153,9 @@ async def messages(request: Request) -> StreamingResponse:
     """M0：把请求体里的最后一句用户输入当成话题，回一段固定内容（流式）。"""
     try:
         body = await request.json()
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError):
+        # JSONDecodeError 是 ValueError 的子类；空 body / Content-Type 不匹配也走这里，
+        # 一律回退成空 body（宽容解析是本 mock 的本意，不该 500）
         body = {}
     if not isinstance(body, dict):
         body = {}
