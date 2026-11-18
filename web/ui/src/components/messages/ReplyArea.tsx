@@ -164,7 +164,7 @@ const StepItem = ({
 }
 
 /** 思考或过程性文字：左侧圆点 + 竖线，小号 markdown */
-export const ContentItem = ({
+const ContentItem = ({
   children,
   active,
   isLast,

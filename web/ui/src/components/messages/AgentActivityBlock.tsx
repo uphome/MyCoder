@@ -18,12 +18,7 @@ import {
   type ThinkingEntry,
   type ToolEntry,
 } from '../../services/chat/agentActivity.js'
-import { IconChevronDownOutline14, IconChevronRightOutline14, IconThinkOutline16 } from '../base/icons.js'
 import { Button } from '../base/Button.js'
-import { Markdown } from '../markdown/Markdown.js'
-import './thinking.markdown.css'
-import { ContentItem } from './ReplyArea.js'
-import replyStyles from './ReplyArea.module.css'
 import styles from './AgentActivityBlock.module.css'
 
 /** 把 JSON 参数压成一行预览（`{"file_path": "a.txt"}` → `a.txt`）。 */
@@ -49,35 +44,17 @@ const argsPreview = (text: string): string => {
 const statusLabel = (status: ToolEntry['status']): string =>
   status === 'running' ? '执行中' : status === 'error' ? '失败' : '完成'
 
-/**
- * 思考段：**完全复用上游的思考样式**——
- * 标题行用 `ReplyArea.module.css` 的 title/titleIcon/titleText（含 `IconThinkOutline16`），
- * 正文用上游的 `ContentItem`（它挂 `ds-think-content`，`thinking.markdown.css` 就作用在它上面）
- * + `Markdown`。唯一的变化是**位置**：它现在跟着工具卡按时间顺序排，而不是全堆在顶部。
- */
-const ThinkingBlock = ({ item, streaming }: { item: ThinkingEntry; streaming: boolean }) => {
-  const [open, setOpen] = useState(true)
+/** 思考段：默认折叠，只显示字数；展开是纯文本（不做 Markdown，思考不属于"文档"）。 */
+const ThinkingBlock = ({ item }: { item: ThinkingEntry }) => {
+  const [open, setOpen] = useState(false)
   return (
-    <div>
-      <div className={replyStyles.title} onClick={() => setOpen((value) => !value)}>
-        <span className={replyStyles.titleIcon}>
-          <IconThinkOutline16 />
-        </span>
-        <span className={replyStyles.titleText}>思考</span>
-        {open ? <IconChevronDownOutline14 /> : <IconChevronRightOutline14 />}
-      </div>
-      {open ? (
-        <div className={replyStyles.steps}>
-          <ContentItem active={streaming} isLast>
-            <Markdown
-              content={item.text}
-              loading={false}
-              cacheKey={`thinking-${item.id}`}
-              disableLink
-            />
-          </ContentItem>
-        </div>
-      ) : null}
+    <div className={styles.thinking}>
+      <button type="button" className={styles.thinkingHeader} onClick={() => setOpen((v) => !v)}>
+        <span className={styles.chevron}>{open ? '▾' : '▸'}</span>
+        <span className={styles.thinkingTitle}>思考</span>
+        <span className={styles.thinkingMeta}>{item.text.length} 字</span>
+      </button>
+      {open ? <pre className={styles.thinkingBody}>{item.text}</pre> : null}
     </div>
   )
 }
@@ -147,14 +124,13 @@ const ApprovalCard = ({ item }: { item: ApprovalEntry }) => {
   )
 }
 
-export const AgentActivityBlock = ({ streaming = false }: { streaming?: boolean } = {}) => {
+export const AgentActivityBlock = () => {
   const items = useSyncExternalStore(agentActivity.subscribe, agentActivity.snapshot)
   if (items.length === 0) return null
   return (
     <div className={styles.wrap}>
       {items.map((item) => {
-        if (item.kind === 'thinking')
-          return <ThinkingBlock key={item.id} item={item} streaming={streaming} />
+        if (item.kind === 'thinking') return <ThinkingBlock key={item.id} item={item} />
         if (item.kind === 'approval') return <ApprovalCard key={`approval-${item.id}`} item={item} />
         return <ToolCard key={`tool-${item.callId}`} item={item} />
       })}
