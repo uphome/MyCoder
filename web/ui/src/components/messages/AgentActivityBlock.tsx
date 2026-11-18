@@ -1,26 +1,18 @@
 /**
  * 工具卡 + 审批卡（M2）。
  *
- * 视觉全部取自上游：容器用 `AgentActivityBlock.module.css` 里的设计 token，
- * 按钮直接用上游的 `<Button>` 基元（variant/size 同款），所以和设置台、输入区
- * 那些按钮是同一套尺寸与配色。
- *
- * 一张卡 = 一次工具调用；状态点表示 running/done/error；点抬头展开结果。
+ * 视觉沿用上游的基元（圆角、边框、字号都取主题 token），但布局是我们自己的：
+ * 一张卡 = 一次工具调用；状态点表示 running/done/error；点击展开结果；
  * 审批卡带**批准 / 拒绝**两个按钮，直接打 `POST /approval/respond`。
  */
 
 import clsx from 'clsx'
 import { useState, useSyncExternalStore } from 'react'
 import { respondApproval } from '../../services/api/ours.js'
-import {
-  agentActivity,
-  type ApprovalActivity,
-  type ToolActivity,
-} from '../../services/chat/agentActivity.js'
-import { Button } from '../base/Button.js'
+import { agentActivity, type ApprovalActivity, type ToolActivity } from '../../services/chat/agentActivity.js'
 import styles from './AgentActivityBlock.module.css'
 
-/** 把 JSON 参数压成一行预览（`{"file_path": "a.txt"}` → `a.txt`）。 */
+/** 把 JSON 参数压成一行预览（`read_file {"file_path": "a.txt"}` → `read_file · a.txt`）。 */
 const argsPreview = (text: string): string => {
   const raw = text.trim()
   if (!raw) return ''
@@ -32,13 +24,14 @@ const argsPreview = (text: string): string => {
       if (first) {
         const value = first[1]
         const rendered = typeof value === 'string' ? value : JSON.stringify(value)
-        return rendered.length > 72 ? `${rendered.slice(0, 72)}…` : rendered
+        const short = rendered.length > 60 ? `${rendered.slice(0, 60)}…` : rendered
+        return short
       }
     }
   } catch {
-    // 不是 JSON（入参坏了/被截断）：原样显示
+    // 不是 JSON（工具入参坏了/被截断）：原样显示
   }
-  return raw.length > 72 ? `${raw.slice(0, 72)}…` : raw
+  return raw.length > 60 ? `${raw.slice(0, 60)}…` : raw
 }
 
 const statusLabel = (status: ToolActivity['status']): string =>
@@ -84,9 +77,9 @@ const ApprovalCard = ({ item }: { item: ApprovalActivity }) => {
   }
   const preview = argsPreview(item.argumentsText)
   return (
-    <div className={clsx(styles.card, styles.approval)}>
+    <div className={clsx(styles.card, styles.approval, item.status === 'pending' && styles.pending)}>
       <div className={styles.cardHeaderStatic}>
-        <span className={clsx(styles.dot, item.status === 'pending' ? styles.pendingDot : styles.done)} />
+        <span className={clsx(styles.dot, styles.pendingDot)} />
         <span className={styles.name}>{item.name}</span>
         {preview ? <span className={styles.args}>{preview}</span> : null}
         <span className={styles.status}>
@@ -95,12 +88,22 @@ const ApprovalCard = ({ item }: { item: ApprovalActivity }) => {
       </div>
       {item.status === 'pending' ? (
         <div className={styles.actions}>
-          <Button variant="primary" size="s" disabled={busy} onClick={() => void answer(true)}>
+          <button
+            type="button"
+            className={styles.approve}
+            disabled={busy}
+            onClick={() => void answer(true)}
+          >
             批准
-          </Button>
-          <Button variant="outlined" size="s" disabled={busy} onClick={() => void answer(false)}>
+          </button>
+          <button
+            type="button"
+            className={styles.deny}
+            disabled={busy}
+            onClick={() => void answer(false)}
+          >
             拒绝
-          </Button>
+          </button>
         </div>
       ) : null}
     </div>
